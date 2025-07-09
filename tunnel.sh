@@ -6,7 +6,7 @@ RESET=$(tput sgr0)
 
 echo -e "${CYAN}"
 echo "===================================="
-echo "        GitHub: mamadrss"
+echo "        GitHub: AbrDade"
 echo "   GRE Tunnel v1 Setup Script"
 echo "   Persistent Option via systemd"
 echo "===================================="
