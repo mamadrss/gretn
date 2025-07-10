@@ -7,17 +7,23 @@ RESET=$(tput sgr0)
 GRE_SCRIPT_DIR="/usr/local/bin"
 SYSTEMD_DIR="/etc/systemd/system"
 
-# نمایش بنر
+PRIVATE_IP_RANGES=(
+  "192.168.100.0"
+  "192.168.200.0"
+  "10.10.10.0"
+  "172.16.100.0"
+  "172.20.30.0"
+)
+
 banner() {
   echo -e "${CYAN}"
   echo "===================================="
-  echo "        GRE Tunnel Manager"
-  echo "        GitHub: AbrDade"
+  echo "      GRE Tunnel Manager - v2"
+  echo "      GitHub: AbrDade"
   echo "===================================="
   echo -e "${RESET}"
 }
 
-# فعال‌سازی IP forwarding
 enable_ip_forwarding() {
   sudo sysctl -w net.ipv4.ip_forward=1
   if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
@@ -26,7 +32,18 @@ enable_ip_forwarding() {
   sudo sysctl -p > /dev/null
 }
 
-# ایجاد تونل جدید
+find_free_range() {
+  for BASE_IP in "${PRIVATE_IP_RANGES[@]}"; do
+    NET_PREFIX=$(echo "$BASE_IP" | cut -d. -f1-3)
+    MATCH=$(ip addr show | grep -c "$NET_PREFIX")
+    if [[ "$MATCH" -eq 0 ]]; then
+      echo "$BASE_IP"
+      return
+    fi
+  done
+  echo ""
+}
+
 create_tunnel() {
   read -p "Enter a name for the GRE tunnel (e.g., gre-tun0): " TUN_NAME
   [[ -z "$TUN_NAME" ]] && echo "[!] Tunnel name cannot be empty." && return
@@ -39,27 +56,32 @@ create_tunnel() {
   read -p "Enter IRAN server IP: " IP_IRAN
   read -p "Enter FOREIGN server IP: " IP_FOREIGN
 
-  echo "[*] Removing existing tunnel if present..."
-  sudo ip tunnel del "$TUN_NAME" 2>/dev/null
-
-  if [[ "$LOCATION" == "1" ]]; then
-    sudo ip tunnel add "$TUN_NAME" mode gre local "$IP_IRAN" remote "$IP_FOREIGN" ttl 255
-    sudo ip link set "$TUN_NAME" up
-    sudo ip addr add 132.168.30.2/30 dev "$TUN_NAME"
-    enable_ip_forwarding
-    echo -e "${YELLOW}[INFO] Tunnel is up. Use destination IP: 132.168.30.1${RESET}"
-  elif [[ "$LOCATION" == "2" ]]; then
-    sudo ip tunnel add "$TUN_NAME" mode gre local "$IP_FOREIGN" remote "$IP_IRAN" ttl 255
-    sudo ip link set "$TUN_NAME" up
-    sudo ip addr add 132.168.30.1/30 dev "$TUN_NAME"
-    enable_ip_forwarding
-    echo -e "${YELLOW}[INFO] Tunnel is up. Use destination IP: 132.168.30.2${RESET}"
-  else
-    echo "[!] Invalid selection."
+  BASE_IP=$(find_free_range)
+  if [[ -z "$BASE_IP" ]]; then
+    echo "[!] No free IP range available. Please free some or expand the list."
     return
   fi
 
-  read -p "Do you want to create a persistent systemd service? (y/n): " MAKE_SERVICE
+  echo "[*] Using IP base: $BASE_IP/30"
+
+  if [[ "$LOCATION" == "1" ]]; then
+    LOCAL_TUN_IP="${BASE_IP%.*}.2"
+    REMOTE_TUN_IP="${BASE_IP%.*}.1"
+  else
+    LOCAL_TUN_IP="${BASE_IP%.*}.1"
+    REMOTE_TUN_IP="${BASE_IP%.*}.2"
+  fi
+
+  sudo ip tunnel del "$TUN_NAME" 2>/dev/null
+  sudo ip tunnel add "$TUN_NAME" mode gre local "$([ "$LOCATION" == "1" ] && echo "$IP_IRAN" || echo "$IP_FOREIGN")" \
+                                     remote "$([ "$LOCATION" == "1" ] && echo "$IP_FOREIGN" || echo "$IP_IRAN")" ttl 255
+  sudo ip link set "$TUN_NAME" up
+  sudo ip addr add "$LOCAL_TUN_IP/30" dev "$TUN_NAME"
+  enable_ip_forwarding
+
+  echo -e "${YELLOW}[INFO] Tunnel is up. Destination IP to use: $REMOTE_TUN_IP${RESET}"
+
+  read -p "Create persistent systemd service? (y/n): " MAKE_SERVICE
   if [[ "$MAKE_SERVICE" =~ ^[Yy]$ ]]; then
     SCRIPT_PATH="$GRE_SCRIPT_DIR/setup-gre-$TUN_NAME.sh"
     SERVICE_PATH="$SYSTEMD_DIR/gre-$TUN_NAME.service"
@@ -68,9 +90,10 @@ create_tunnel() {
 #!/bin/bash
 ip tunnel add "$TUN_NAME" mode gre local "$([ "$LOCATION" == "1" ] && echo "$IP_IRAN" || echo "$IP_FOREIGN")" remote "$([ "$LOCATION" == "1" ] && echo "$IP_FOREIGN" || echo "$IP_IRAN")" ttl 255
 ip link set "$TUN_NAME" up
-ip addr add $([ "$LOCATION" == "1" ] && echo "132.168.30.2/30" || echo "132.168.30.1/30") dev "$TUN_NAME"
+ip addr add "$LOCAL_TUN_IP/30" dev "$TUN_NAME"
 sysctl -w net.ipv4.ip_forward=1
 EOF
+
     sudo chmod +x "$SCRIPT_PATH"
 
     sudo tee "$SERVICE_PATH" > /dev/null <<EOF
@@ -91,11 +114,10 @@ EOF
 
     sudo systemctl daemon-reload
     sudo systemctl enable "gre-$TUN_NAME.service"
-    echo "[*] Service gre-$TUN_NAME.service created and enabled."
+    echo "[*] Persistent systemd service gre-$TUN_NAME.service enabled."
   fi
 }
 
-# حذف کامل تونل و سرویس مرتبط
 delete_tunnel() {
   read -p "Enter the GRE tunnel name to delete: " TUN_NAME
   [[ -z "$TUN_NAME" ]] && echo "[!] Tunnel name cannot be empty." && return
@@ -103,32 +125,27 @@ delete_tunnel() {
   SERVICE="gre-$TUN_NAME.service"
   SCRIPT="$GRE_SCRIPT_DIR/setup-gre-$TUN_NAME.sh"
 
-  echo "[*] Stopping and removing tunnel..."
+  echo "[*] Stopping and deleting tunnel $TUN_NAME..."
   sudo ip tunnel del "$TUN_NAME" 2>/dev/null
 
   if systemctl list-units --full -all | grep -q "$SERVICE"; then
-    echo "[*] Disabling and removing systemd service..."
     sudo systemctl stop "$SERVICE"
     sudo systemctl disable "$SERVICE"
     sudo rm -f "$SYSTEMD_DIR/$SERVICE"
     sudo systemctl daemon-reload
+    echo "[*] Removed systemd service."
   fi
 
-  if [[ -f "$SCRIPT" ]]; then
-    echo "[*] Removing script $SCRIPT"
-    sudo rm -f "$SCRIPT"
-  fi
+  [[ -f "$SCRIPT" ]] && sudo rm -f "$SCRIPT"
 
-  echo -e "${YELLOW}[INFO] Tunnel and service (if existed) have been removed.${RESET}"
+  echo -e "${YELLOW}[INFO] Tunnel $TUN_NAME and its service removed (if existed).${RESET}"
 }
 
-# لیست تونل‌های فعال
 list_tunnels() {
-  echo "[*] Existing GRE tunnels:"
-  ip tunnel show | grep -E 'gre[0-9]*|tun' || echo "(none found)"
+  echo "[*] Active GRE tunnels:"
+  ip tunnel show | grep -vE '^gre0|gretap0|erspan0' || echo "(none)"
 }
 
-# منوی اصلی
 main_menu() {
   while true; do
     banner
