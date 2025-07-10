@@ -19,7 +19,7 @@ banner() {
   echo -e "${CYAN}"
   echo "===================================="
   echo "      GRE Tunnel Manager - v2"
-  echo "      GitHub: AbrDade"
+  echo "      GitHub: MamadRss"
   echo "===================================="
   echo -e "${RESET}"
 }
