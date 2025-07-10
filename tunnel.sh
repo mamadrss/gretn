@@ -142,9 +142,18 @@ delete_tunnel() {
 }
 
 list_tunnels() {
-  echo "[*] Active GRE tunnels:"
-  ip tunnel show | grep -vE '^gre0|gretap0|erspan0' || echo "(none)"
+  echo "[*] Active GRE tunnels with IP assignments:"
+  echo "--------------------------------------------"
+  
+  ip tunnel show | grep -vE '^gre0|gretap0|erspan0' | while read -r line; do
+    TUN_NAME=$(echo "$line" | awk -F: '{print $1}')
+    LOCAL_IP=$(ip addr show "$TUN_NAME" 2>/dev/null | grep 'inet ' | awk '{print $2}' || echo "N/A")
+    STATE=$(ip link show "$TUN_NAME" | grep -q "state UP" && echo "UP" || echo "DOWN")
+
+    printf "🔗 %s\t%s\t[%s]\n" "$TUN_NAME" "$LOCAL_IP" "$STATE"
+  done
 }
+
 
 main_menu() {
   while true; do
