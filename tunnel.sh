@@ -56,13 +56,20 @@ create_tunnel() {
   read -p "Enter IRAN server IP: " IP_IRAN
   read -p "Enter FOREIGN server IP: " IP_FOREIGN
 
-  BASE_IP=$(find_free_range)
-  if [[ -z "$BASE_IP" ]]; then
-    echo "[!] No free IP range available. Please free some or expand the list."
-    return
-  fi
+  echo
+  read -p "Enter custom /30 base IP (e.g. 10.20.30.0), or press Enter to auto-select: " CUSTOM_BASE
 
-  echo "[*] Using IP base: $BASE_IP/30"
+  if [[ -n "$CUSTOM_BASE" ]]; then
+    BASE_IP="$CUSTOM_BASE"
+    echo "[*] Using custom IP base: $BASE_IP/30"
+  else
+    BASE_IP=$(find_free_range)
+    if [[ -z "$BASE_IP" ]]; then
+      echo "[!] No free IP range available. Please free some or expand the list."
+      return
+    fi
+    echo "[*] Using auto-selected IP base: $BASE_IP/30"
+  fi
 
   if [[ "$LOCATION" == "1" ]]; then
     LOCAL_TUN_IP="${BASE_IP%.*}.2"
@@ -117,6 +124,7 @@ EOF
     echo "[*] Persistent systemd service gre-$TUN_NAME.service enabled."
   fi
 }
+
 
 delete_tunnel() {
   read -p "Enter the GRE tunnel name to delete: " TUN_NAME
